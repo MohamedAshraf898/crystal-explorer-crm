@@ -13,6 +13,13 @@ import { formatDistance, formatDuration, loadRoads, route } from '../lib/router.
 
 const { width: MAP_W, height: MAP_H, cols: COLS, rows: ROWS } = cfg.full; // assets/map/tiles/{row}-{col}.webp
 const TW = Math.ceil(MAP_W / COLS), TH = Math.ceil(MAP_H / ROWS); // tile size (last row / column is cropped)
+/*
+ * Memory: phones can't hold the whole detailed map (30 big images ≈ 500 MB
+ * decoded — Safari kills the tab). So a small blurry base image covers the
+ * whole map, and detail tiles are loaded only while they're on screen and
+ * dropped again when they leave it. Phones use half-size tiles.
+ */
+const MAX_TILES = 9;
 const ICONS = {
   mall: '<path d="M7 9V7a5 5 0 0 1 10 0v2"/><path d="M5 9h14l-1 11H6z"/>',
   promenade: '<path d="M3 15c2 0 2-2 4.5-2S10 15 12 15s2.5-2 4.5-2 2.5 2 4.5 2"/><path d="M3 19c2 0 2-2 4.5-2S10 19 12 19s2.5-2 4.5-2 2.5 2 4.5 2"/><path d="M12 11V4l5 3-5 3"/>',
@@ -56,21 +63,22 @@ export function createMapView() {
   const state = { from: 'site', to: places[0]?.id ?? null, me: null, result: null, open: false };
 
   /* ── map stage ───────────────────────────────────────────────────────── */
+  const base = h('img', { className: 'mapview__tile mapview__base', alt: '', draggable: 'false', decoding: 'async', style: `left:0;top:0;width:${MAP_W}px;height:${MAP_H}px` });
   const tiles = [];
   for (let r = 0; r < ROWS; r++)
     for (let c = 0; c < COLS; c++)
-      tiles.push(h('img', { className: 'mapview__tile', alt: '', draggable: 'false', decoding: 'async', 'data-src': `assets/map/tiles/${r}-${c}.webp`, style: `left:${c * TW}px;top:${r * TH}px;width:${Math.min(TW, MAP_W - c * TW)}px;height:${Math.min(TH, MAP_H - r * TH)}px` }));
+      tiles.push(h('img', { className: 'mapview__tile', alt: '', draggable: 'false', decoding: 'async', 'data-r': r, 'data-c': c, style: `left:${c * TW}px;top:${r * TH}px;width:${Math.min(TW, MAP_W - c * TW)}px;height:${Math.min(TH, MAP_H - r * TH)}px` }));
   const routeCasing = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
   const routeLine = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
   const routeLinks = document.createElementNS('http://www.w3.org/2000/svg', 'path'); // dashed bits from a place to its road
   routeCasing.setAttribute('class', 'mapview__route-casing');
   routeLine.setAttribute('class', 'mapview__route');
   routeLinks.setAttribute('class', 'mapview__route-link');
+  // the route is drawn in screen space (a small screen-sized SVG), not on the huge map layer
   const routeSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   routeSvg.setAttribute('class', 'mapview__routes');
-  routeSvg.setAttribute('viewBox', `0 0 ${MAP_W} ${MAP_H}`);
   routeSvg.append(routeCasing, routeLinks, routeLine);
-  const world = h('div', { className: 'mapview__world', style: `width:${MAP_W}px;height:${MAP_H}px` }, ...tiles, routeSvg);
+  const world = h('div', { className: 'mapview__world', style: `width:${MAP_W}px;height:${MAP_H}px` }, base, ...tiles);
 
   const markerEls = new Map();
   const markerLayer = h('div', { className: 'mapview__markers' });
@@ -86,7 +94,7 @@ export function createMapView() {
   }
   [...places, site].forEach(marker);
 
-  const stage = h('div', { className: 'mapview__stage' }, world, markerLayer);
+  const stage = h('div', { className: 'mapview__stage' }, world, routeSvg, markerLayer);
   const zoomIn = h('button', { type: 'button', className: 'mapview__ctl', 'aria-label': 'Zoom in', onClick: () => zoomBy(1.6) }, '+');
   const zoomOut = h('button', { type: 'button', className: 'mapview__ctl', 'aria-label': 'Zoom out', onClick: () => zoomBy(1 / 1.6) }, '−');
   const recenter = h('button', { type: 'button', className: 'mapview__ctl mapview__ctl--icon', 'aria-label': 'Show the whole route', onClick: () => fit(true) }, svg('<circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>', 'mapview__ctl-icon'));
@@ -177,8 +185,8 @@ export function createMapView() {
     clamp();
     const [tx, ty] = toScreen([0, 0]);
     world.style.transform = `matrix(${view.s * cos},${view.s * sin},${-view.s * sin},${view.s * cos},${tx},${ty})`;
-    // the route is drawn in map pixels: keep its on-screen width constant
-    routeSvg.style.setProperty('--k', String(1 / view.s));
+    drawRouteGeometry();
+    updateTiles();
     for (const [id, el] of markerEls) {
       const p = id === 'me' ? state.me : byId.get(id);
       if (!p) continue;
@@ -331,17 +339,55 @@ export function createMapView() {
     fit(true);
   }
 
+  /** load the detail tiles that are on screen (when zoomed in enough), drop the rest */
+  function updateTiles() {
+    if (!state.open) return;
+    // the base image is sharp enough until ~1 base pixel per screen pixel
+    const baseScale = 2400 / MAP_W;
+    const need = view.s * (window.devicePixelRatio || 1) > baseScale * 1.4;
+    const r = { x: 0, y: 0, w: root.clientWidth, h: root.clientHeight };
+    const pts = [[r.x, r.y], [r.x + r.w, r.y], [r.x, r.y + r.h], [r.x + r.w, r.y + r.h]].map(toWorld);
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const m = 0.15; // load a little beyond the screen edge
+    const c0 = Math.floor(Math.min(...xs) / TW - m), c1 = Math.floor(Math.max(...xs) / TW + m);
+    const r0 = Math.floor(Math.min(...ys) / TH - m), r1 = Math.floor(Math.max(...ys) / TH + m);
+    const count = (c1 - c0 + 1) * (r1 - r0 + 1);
+    const visible = need && count <= MAX_TILES;
+    // phones: half-size tiles, full-size only when zoomed right in (few tiles on screen)
+    const sharp = !isMobile.matches || (view.s * (window.devicePixelRatio || 1) > 0.65 && count <= 4);
+    const dir = sharp ? 'assets/map/tiles' : 'assets/map/tiles-sm';
+    for (const t of tiles) {
+      const tr = Number(t.dataset.r), tc = Number(t.dataset.c);
+      const want = visible && tr >= r0 && tr <= r1 && tc >= c0 && tc <= c1;
+      const src = `${dir}/${tr}-${tc}.webp`;
+      if (want && t.getAttribute('src') !== src) t.src = src;
+      else if (!want && t.getAttribute('src')) t.removeAttribute('src'); // frees the decoded image
+    }
+  }
+
+  function drawRouteGeometry() {
+    const r = state.result;
+    if (!r) return;
+    const toPts = (list) => list.map((p) => toScreen(p).map((v) => v.toFixed(1)).join(',')).join(' ');
+    const walk = Boolean(r.walk);
+    const pts = walk ? '' : toPts(r.points);
+    routeLine.setAttribute('points', pts);
+    routeCasing.setAttribute('points', pts);
+    const seg = (a, b) => `M${toScreen(a).join(',')}L${toScreen(b).join(',')}`;
+    routeLinks.setAttribute('d', walk ? seg(r.from.xy, r.to.xy) : seg(r.from.xy, r.points[0]) + seg(r.points[r.points.length - 1], r.to.xy));
+  }
+
   function drawRoute() {
     const r = state.result;
-    const pts = r ? r.points.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ') : '';
-    const walk = Boolean(r?.walk);
-    routeLine.setAttribute('points', walk ? '' : pts);
-    routeCasing.setAttribute('points', walk ? '' : pts);
-    // dashed links: place → nearest road at both ends (or the whole short walk)
-    const d = !r ? '' : walk ? `M${r.from.xy.join(',')}L${r.to.xy.join(',')}` : `M${r.from.xy.join(',')}L${r.points[0].join(',')}M${r.points[r.points.length - 1].join(',')}L${r.to.xy.join(',')}`;
-    routeLinks.setAttribute('d', d);
-    flag(routeSvg, 'walk', walk);
+    if (!r) {
+      routeLine.setAttribute('points', '');
+      routeCasing.setAttribute('points', '');
+      routeLinks.setAttribute('d', '');
+    }
+    flag(routeSvg, 'walk', Boolean(r?.walk));
+    drawRouteGeometry();
   }
+
 
   function setEnd(which, id) {
     if (which === 'from' && id === 'me') return locate();
@@ -404,7 +450,7 @@ export function createMapView() {
     root.inert = !v;
     if (v) {
       returnFocus = document.activeElement;
-      tiles.forEach((t) => !t.src && (t.src = t.dataset.src));
+      if (!base.src) base.src = 'assets/map/base.webp';
       fillSelects();
       gsap.fromTo(root, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.45, ease: 'power2.out' });
       fit(false);

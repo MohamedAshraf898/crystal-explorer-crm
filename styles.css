@@ -2570,7 +2570,7 @@ a {
   top: 0;
   left: 0;
   transform-origin: 0 0;
-  will-change: transform;
+  /* no will-change: a 12680 px layer would be rasterised whole on iPhone */
 }
 
 .mapview__tile {
@@ -2583,7 +2583,8 @@ a {
 
 .mapview__routes {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
   overflow: visible;
