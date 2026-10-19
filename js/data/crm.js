@@ -11,8 +11,8 @@
  *  apartments.js, and the request form doesn't send anywhere.
  */
 export const crm = {
-  url: '',
-  anonKey: '',
+  url: 'https://ibwinfoorlebvcehlqrh.supabase.co',
+  anonKey: 'sb_publishable_PMLgIeA5xde8wDFZc6Gylg_YPHHv0yI',
   projectSlug: 'crystal-alamein',
   // The brochure never waits longer than this for the CRM; after it, the
   // built-in data in apartments.js is shown.
