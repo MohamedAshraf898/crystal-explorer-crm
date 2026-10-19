@@ -1,3 +1,5 @@
+import { apartmentsById } from './data/apartments.js';
+import { syncInventory } from './data/live.js';
 import { plans } from './data/plans.js';
 import { views } from './data/project.js';
 import { createDirector } from './director.js';
@@ -29,6 +31,9 @@ async function main() {
 
   const loader = createLoader();
   document.body.append(loader.element);
+
+  // Live availability from the CRM (data only, falls back to apartments.js) — before anything is drawn.
+  const inventorySource = await syncInventory();
 
   // Stages (photo + plan)
   const building = createBuildingView(store);
@@ -84,6 +89,7 @@ async function main() {
   if (new URLSearchParams(location.search).has('debug')) {
     app.classList.add('debug');
     window.__store = store;
+    window.__inventorySource = inventorySource;
   }
 
   // Preload the first photo (+ brand) with real progress, then the other views quietly.
@@ -95,6 +101,14 @@ async function main() {
   await building.ready; // first photo decoded and laid out
   await loader.done();
   store.actions.setReady();
+
+  // Deep link from the CRM: ?unit=4-17 opens that apartment (or its floor if it is sold).
+  const unitParam = new URLSearchParams(location.search).get('unit');
+  const linked = unitParam && apartmentsById.get(unitParam);
+  if (linked) {
+    if (linked.status === 'sold') store.actions.selectFloor(linked.floor);
+    else store.actions.selectApartment(linked.id);
+  }
 
   // Warm the cache while the visitor looks at the building: other photos, then the
   // floor plans — decoded ahead of time so opening a floor doesn't stall on a decode.

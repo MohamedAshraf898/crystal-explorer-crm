@@ -42,7 +42,23 @@ Estimated prices come from the `pricing` model in the same file: built-up area �
 
 Room counts and dimensions per apartment live in **`js/data/layouts.js`** (generated from the plan labels; fix any value there by hand).
 
-To send inquiries to your CRM or email, replace `submitInquiry()` in `js/lib/api.js` with a real `fetch(...)` call.
+Inquiries go to the CRM once `js/data/crm.js` is filled in (see *Connect to the CRM* below).
+
+## Connect to the CRM (live availability and inquiries)
+
+Off by default: with `js/data/crm.js` empty the site behaves exactly as described above.
+To connect, put the Supabase project URL and its **public** anon/publishable key in
+`js/data/crm.js` (never a service-role key), then bump the `?v=` numbers in `index.html` so
+phones load the new files.
+
+- **Availability and prices** come from the CRM on every page load (`js/data/live.js`). The
+  CRM's statuses map to the three the site knows: blocked → sold; on hold and pending → reserved.
+  If the CRM doesn't answer within 4 seconds, or answers with anything unexpected, the site
+  shows the data in `apartments.js` instead, so keep `unitOverrides` roughly current as a fallback.
+- **Request information** sends the form to the CRM, where it becomes a lead for the sales team.
+- **`?unit=4-17`** opens that apartment directly (a sold one opens its floor). The CRM uses it
+  for its "Open in brochure" links.
+- **No visible change:** none of this changes how the site looks.
 
 ## Where the data comes from
 
